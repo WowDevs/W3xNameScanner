@@ -19,6 +19,7 @@
 #define FILE_SIGNATURE_MDX  0x584C444D
 #define FILE_SIGNATURE_TEXT 0x00545854
 
+#define MAX_SINGLE_NAME 0x1000              // The longest length of a single name
 #define NAME_CACHE_SIZE 0x200               // Size of the name cache. Must be a power of two
 
 #define MAX_TRY_COUNT 20
@@ -255,8 +256,9 @@ static bool IsTextFile(LPBYTE pbFileData, DWORD cbFileData)
     for(DWORD i = 0; i < cbFileData; i++)
         LetterCount += IsPrintableCharacter[pbFileData[i]];
 
-    // If more than 1/2 letters, we consider it as text file
-    return (LetterCount > (cbFileData / 3));
+    // If more than 2/3 letters, we consider it as text file
+    return (LetterCount > (cbFileData * 2 / 3));
+//  return (LetterCount > (cbFileData / 3));
 }
 
 static DWORD CalcHashValue(const char * szFileName)
@@ -564,10 +566,50 @@ __RetrySearch:
     }
 }
 
+static void CheckNameVariants(
+    TNameScannerData * pData,
+    const char * szLineBegin,
+    char * szLineEnd)
+{
+    // Save the character from the end of the name
+    char chSaveChar = szLineEnd[0];
+
+    // Terminate the string
+    szLineEnd[0] = 0;
+    CheckNameVariants(pData, szLineBegin);
+    szLineEnd[0] = chSaveChar;
+}
+
+static void CheckNameVariants_CommaSeparated(
+    TNameScannerData * pData,
+    char * szLineBegin)
+{
+    char * szLineEnd = szLineBegin;
+
+    // Parse the line until we find an end
+    while(szLineEnd[0] != 0)
+    {
+        // Find the end of the token
+        while(szLineEnd[0] != ',' && szLineEnd[0] != 0)
+            szLineEnd++;
+
+        // Is there a token with nonzero length > 2?
+        // (note: all 2-char names were or will be checked separately)
+        if((szLineEnd - szLineBegin) > 2)
+            CheckNameVariants(pData, szLineBegin, szLineEnd);
+
+        // Skip the comma
+        while(szLineEnd[0] == ',')
+            szLineEnd++;
+        szLineBegin = szLineEnd;
+    }
+}
+
 static void CheckNameVariantsForLine(
     TNameScannerData * pData,
     char * szFullLine,
-    char * szEqualSign)
+    char * szEqualSign,
+    char * szCommaPtr)
 {
     char * szQuotedStr;
     char * szQuotedEnd;
@@ -580,7 +622,13 @@ static void CheckNameVariantsForLine(
     {
         // Move the begin of the line past the equal sign
         szFullLine = SkipSpaces(szEqualSign + 1);
+
+        // Check the line as-is
         CheckNameVariants(pData, szFullLine);
+
+        // If there is also comma, we will check all comma-separated parts
+        if(szCommaPtr > szFullLine)
+            CheckNameVariants_CommaSeparated(pData, szFullLine);
     }
 
     // Search all quoted strings
@@ -914,6 +962,7 @@ static void Worker_ScanTextFile(TNameScannerData * pData, LPBYTE pbFileData, DWO
     while(pbFileData < pbFileEnd)
     {
         LPBYTE pbEqualSign = NULL;
+        LPBYTE pbCommaPtr = NULL;
 
         // Find the begin of the line
         while(pbFileData < pbFileEnd && pbFileData[0] <= 0x20)
@@ -921,22 +970,42 @@ static void Worker_ScanTextFile(TNameScannerData * pData, LPBYTE pbFileData, DWO
         pbLineBegin = pbFileData;
 
         // Find the end of the line
-        while(pbFileData < pbFileEnd && pbFileData[0] != 0x0A && pbFileData[0] != 0x0D)
+        while(pbFileData < pbFileEnd && pbFileData[0] != 0 && pbFileData[0] != 0x0A && pbFileData[0] != 0x0D)
         {
             if(pbFileData[0] == '=')
                 pbEqualSign = pbFileData;
+            if(pbFileData[0] == ',')
+                pbCommaPtr = pbFileData;
             pbFileData++;
         }
 
         // Terminate the line and skip it
-        while(pbFileData < pbFileEnd && (pbFileData[0] == 0x0A || pbFileData[0] == 0x0D))
+        while(pbFileData < pbFileEnd && (pbFileData[0] == 0 || pbFileData[0] == 0x0A || pbFileData[0] == 0x0D))
             *pbFileData++ = 0;
 
         // Cut the line
         if(pbFileData > pbLineBegin)
         {
-            CheckNameVariantsForLine(pData, (char *)pbLineBegin, (char *)pbEqualSign);
+            CheckNameVariantsForLine(pData, (char *)pbLineBegin, (char *)pbEqualSign, (char *)pbCommaPtr);
         }
+    }
+}
+
+// TEXS file is an array, not just a single name. Thanks Actboy168
+// http://www.wc3c.net/tools/specs/NubMdxFormat.txt
+static void Worker_ScanMdxFile_TEXS(TNameScannerData * pData, TMdxBlockHeader * pBlockHdr, LPBYTE pbFileEnd)
+{
+    LPBYTE pbBlockBegin = (LPBYTE)(pBlockHdr + 1);
+    LPBYTE pbBlockEnd = pbBlockBegin + pBlockHdr->dwBlockSize;
+
+    // Get the end of the block data
+    pbBlockEnd = min(pbBlockEnd, pbFileEnd);
+
+    // Parse all textures
+    while(pbBlockBegin < pbBlockEnd)
+    {
+        CheckNameVariants(pData, (char *)(pbBlockBegin + sizeof(DWORD)));
+        pbBlockBegin += 0x10C;
     }
 }
 
@@ -1003,7 +1072,7 @@ static void Worker_ScanMdxFile(TNameScannerData * pData, LPBYTE pbFileData, DWOR
                         break;
 
                     case 'SXET':    // "TEXS"
-                        CheckNameVariants(pData, (char *)(pBlockHdr + 1) + sizeof(DWORD));
+                        Worker_ScanMdxFile_TEXS(pData, pBlockHdr, pbFileEnd);
                         break;
 
                     case 'HCTA':    // "ATCH"
