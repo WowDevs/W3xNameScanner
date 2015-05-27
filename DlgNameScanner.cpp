@@ -21,6 +21,19 @@
 
 #define NAME_CACHE_SIZE 0x200               // Size of the name cache. Must be a power of two
 
+#define MAX_TRY_COUNT 20
+
+#define STORM_FLAG_EXIT_PROCESS 0x01
+
+typedef struct _STORM_SCAN_DATA
+{
+    DWORD cbTotalSize;
+    DWORD cbDataSize;
+    DWORD dwFlags;
+    DWORD dwReserved;
+
+} STORM_SCAN_DATA, *PSTORM_SCAN_DATA;
+
 struct TMdxBlockHeader
 {
     DWORD dwBlockType;                      // Block type ('VERS', 'SEQS', 'MODL', 'TEXS', 'ATCH', 'PREM', ...
@@ -67,16 +80,21 @@ struct TFileNameEntry
 
 struct TNameScannerData
 {
-    LIST_ENTRY NameCache[NAME_CACHE_SIZE];  // Cache of the file name
+    LIST_ENTRY NameCache[NAME_CACHE_SIZE];  // Cache of the file names
+    PSTORM_SCAN_DATA pScanData;
     TAnchors * pAnchors;
     UINT_PTR TimerId;
+    LPTSTR szMpqName;
     LPCTSTR szListFile;
+    HANDLE hProcess;                        // Handle to the process
+    HANDLE hEvent;                          // Sync event with the game
     HANDLE hMpq;
     HWND hDlgWorker;
     HWND hDlg;
     HWND hListView;
     DWORD dwFoundNames;
     DWORD dwStopCount;                      // Internal counter for whether the worker was stopped
+    UINT nScannerMode;
     bool bFreeListFile;                     // If TRUE, then the list file name needs to be freed
     bool bWorkStopped;
     bool bIsClosing;
@@ -204,6 +222,9 @@ static unsigned char IsPrintableCharacter[256] =
 /* E0 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
 /* F0 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
 };
+
+LPCTSTR szScanEventName   = _T("MPQEditor_LiveScan_Event");
+LPCTSTR szScanSectionName = _T("MPQEditor_LiveScan_Data");
 
 //-----------------------------------------------------------------------------
 // Worker thread support
@@ -333,6 +354,34 @@ static void ConstructFullName(
     }
 
     szBuffer[0] = 0;
+}
+
+// Changing thread context
+static int SetThreadStartAddress(HANDLE hThread, PVOID StartAddress)
+{
+    WOW64GETTHREADCONTEXT pfnGetThreadContext;
+    WOW64GETTHREADCONTEXT pfnSetThreadContext;
+    WOW64_CONTEXT Context;   
+    HMODULE hKernel32 = GetModuleHandle(_T("Kernel32.dll"));
+
+    // Either use 32-bit context or raw context
+    pfnGetThreadContext = (WOW64GETTHREADCONTEXT)GetProcAddress(hKernel32, "Wow64GetThreadContext");
+    pfnSetThreadContext = (WOW64GETTHREADCONTEXT)GetProcAddress(hKernel32, "Wow64SetThreadContext");
+    if(pfnGetThreadContext == NULL || pfnSetThreadContext == NULL)
+    {
+        pfnGetThreadContext = (WOW64GETTHREADCONTEXT)GetThreadContext;
+        pfnSetThreadContext = (WOW64GETTHREADCONTEXT)SetThreadContext;
+    }
+
+    Context.ContextFlags = CONTEXT_FULL;
+    if(!pfnGetThreadContext(hThread, &Context))
+        return GetLastError();
+
+    Context.Eax = (DWORD)(DWORD_PTR)StartAddress;
+    if(!pfnSetThreadContext(hThread, &Context))
+        return GetLastError();
+
+    return ERROR_SUCCESS;
 }
 
 static bool CheckForWorkerStopped(TNameScannerData * pData, DWORD dwStepCount)
@@ -630,12 +679,19 @@ static void Worker_ScanTwoCharFileNames(TNameScannerData * pData)
     // Parse all two character names
     for(USHORT NameCounter = 0x2100; NameCounter < 0x5A5A; NameCounter++)
     {
+        BYTE Character1 = (BYTE)(NameCounter >> 0x08);
+        BYTE Character2 = (BYTE)(NameCounter & 0x0FF);
+
+        // Check for work stopped
+        if(CheckForWorkerStopped(pData, 1000))
+            break;
+
         // Can the first character be a part of file name?
-        if(IsPrintableCharacter[NameCounter >> 0x08])
+        if(IsPrintableCharacter[Character1] && IsPrintableCharacter[Character2])
         {
             // Construct the file name
-            szPlainName[0] = (char)(NameCounter >> 0x08);
-            szPlainName[1] = (char)(NameCounter & 0x0FF);
+            szPlainName[0] = (char)Character1;
+            szPlainName[1] = (char)Character2;
             szPlainName[2] = 0;
 
             CheckNameVariants(pData, szPlainName);
@@ -1051,7 +1107,298 @@ static void Worker_ScanKnownFiles(TNameScannerData * pData)
     }
 }
 
-static int NameScannerWorker(HWND hDlgWorker, LPVOID pvParam)
+static LPTSTR Worker_CreateCopyOfMap(TNameScannerData * pData, LPCTSTR szWar3Dir)
+{
+    LPTSTR szCopyName;
+    TCHAR szNewPlainName[0x40];
+    DWORD dwTryCount = 1;
+    int nError = ERROR_SUCCESS;
+
+    // Create the name of the map copy
+    szCopyName = CreateFullPath(szWar3Dir, _T("Maps"), GetPlainName(pData->szMpqName));
+    if(szCopyName == NULL)
+        nError = ERROR_NOT_ENOUGH_MEMORY;
+
+    // Make sure that the copy name is not equal to the original name
+    // (in case the user opened a map directly within Warcraft III\Maps)
+    if(nError == ERROR_SUCCESS)
+    {
+        while(!_tcsicmp(szCopyName, pData->szMpqName) && dwTryCount < MAX_TRY_COUNT)
+        {
+            // Delete the name of the copy
+            delete [] szCopyName;
+
+            // Format new name
+            _stprintf(szNewPlainName, _T("Map_LiveScan%02u%s"), dwTryCount, GetFileExtension(pData->szMpqName));
+            szCopyName = CreateFullPath(szWar3Dir, _T("Maps"), szNewPlainName);
+            if(szCopyName == NULL)
+            {
+                nError = ERROR_NOT_ENOUGH_MEMORY;
+                break;
+            }
+        }
+
+        // If we exceeded the try count, delete the map and repeat
+        if(dwTryCount >= MAX_TRY_COUNT)
+            nError = ERROR_FILE_EXISTS;
+    }
+
+    // Make sure that the path to maps exists
+    if(nError == ERROR_SUCCESS)
+    {
+        nError = ForcePathExist(szCopyName, FALSE);
+    }
+
+    // If all succeeded, make a copy of the map
+    if(nError == ERROR_SUCCESS)
+    {
+        if(!CopyFile(pData->szMpqName, szCopyName, FALSE))
+            nError = GetLastError();
+    }
+
+    // If something failed, free the map name and return error
+    if(nError != ERROR_SUCCESS)
+    {
+        SetLastError(nError);
+        delete [] szCopyName;
+        szCopyName = NULL;
+    }
+
+    return szCopyName;
+}
+
+static int Worker_LaunchTheGame(LPCTSTR szWar3Dir, LPCTSTR szCopyName, PPROCESS_INFORMATION pProcInfo)
+{
+    STARTUPINFO si = {sizeof(STARTUPINFO)};
+    LPTSTR szCommandLine;
+    size_t cchLength;
+    int nError = ERROR_SUCCESS;
+
+    // Allocate space for the command line
+    cchLength = _tcslen(szWar3Dir) + 12 + 10 + _tcslen(szCopyName) + 3;
+    szCommandLine = new TCHAR[cchLength];
+    if(szCommandLine != NULL)
+    {
+        // Format the command line
+        _stprintf(szCommandLine, _T("\"%s\\war3.exe\" -loadfile \"%s\""), szWar3Dir, szCopyName);
+        if(!CreateProcess(NULL, szCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &si, pProcInfo))
+            nError = GetLastError();
+
+        delete [] szCommandLine;
+    }
+    else
+        nError = ERROR_NOT_ENOUGH_MEMORY;
+
+    return nError;
+}
+
+static void Worker_ParseScanData(TNameScannerData * pData, PSTORM_SCAN_DATA pScanCopy)
+{
+    HANDLE hFile;
+    char * szFileName = (char *)(pScanCopy + 1);
+    char * szFileEnd = szFileName + pScanCopy->cbDataSize;
+
+    while(szFileName < szFileEnd)
+    {
+        // Verify if the name exists in the MPQ, then add it to the list
+        if(SFileOpenFileEx(pData->hMpq, szFileName, 0, &hFile))
+        {
+            InsertFileName(pData, szFileName);
+            SFileCloseFile(hFile);
+        }
+
+        // Get the next file name
+        while(szFileName < szFileEnd && szFileName[0] != 0)
+            szFileName++;
+        while(szFileName < szFileEnd && szFileName[0] == 0)
+            szFileName++;
+    }
+}
+
+static int Worker_LiveScanModalLoop(TNameScannerData * pData)
+{
+    PSTORM_SCAN_DATA pScanData = pData->pScanData;
+    PSTORM_SCAN_DATA pScanCopy;
+    SIZE_T cbToAllocate;
+
+    // Sanity checks
+    assert(pData->pScanData != NULL);
+    assert(pData->hProcess != NULL);
+    assert(pData->hEvent != NULL);
+
+    // Allocate copy of the scan data
+    cbToAllocate = sizeof(STORM_SCAN_DATA) + pScanData->cbTotalSize;
+    pScanCopy = (PSTORM_SCAN_DATA)HeapAlloc(g_hHeap, 0, cbToAllocate);
+    if(pScanCopy != NULL)
+    {
+        // Work as long as the game is running
+        while(WaitForSingleObject(pData->hProcess, 500) == WAIT_TIMEOUT)
+        {
+            // If the cancel button was checked, stop it
+            if(WorkerWasCancelled(pData->hDlgWorker))
+            {
+                if(Worker_MessageBoxRc(pData->hDlgWorker, IDS_QUESTION, IDS_WANT_KILL_WARCRAFT3) == IDYES)
+                    TerminateProcess(pData->hProcess, 3);
+                SetWorkerCancelState(pData->hDlgWorker, false);
+            }
+
+            // Lock the scan data
+            if(WaitForSingleObject(pData->hEvent, 500) == WAIT_OBJECT_0)
+            {
+                // Copy the scan data to our structure
+                memcpy(pScanCopy, pScanData, cbToAllocate);
+                pScanData->cbDataSize = 0;
+
+                // Unlock the scan data
+                SetEvent(pData->hEvent);
+
+                // Parse the data copy
+                Worker_ParseScanData(pData, pScanCopy);
+            }
+        }
+
+        // Free the copy of the scan
+        HeapFree(g_hHeap, 0, pScanCopy);
+    }
+
+    return ERROR_SUCCESS;
+}
+
+static int WorkerLiveScan(HWND hDlgWorker, LPVOID pvParam)
+{
+    PROCESS_INFORMATION pi = {0};
+    TNameScannerData * pData = (TNameScannerData *)pvParam;
+    PSTORM_SCAN_DATA pScanData = NULL;
+    LPVOID pvRemoteBuffer = NULL;
+    LPBYTE pbScannerCode = NULL;
+    LPTSTR szCopyName = NULL;
+    HANDLE hMap = NULL;
+    SIZE_T cbWritten = 0;
+    TCHAR szWar3Dir[MAX_PATH+1];
+    DWORD cbScannerCode = 0;
+    int nError = ERROR_SUCCESS;
+
+    // Allow the work to be cancelled
+    EnableWorkerCancelButton(hDlgWorker, TRUE);
+    pData->hDlgWorker = hDlgWorker;
+
+#ifdef _DEBUG
+//  system("pskill.exe war3.exe");
+#endif
+
+    // Load the scanner code from resources
+    pbScannerCode = LoadResourceData(g_hInst, MAKEINTRESOURCE(IDR_SCANNER_CODE), _T("RT_BINARY"), &cbScannerCode);
+    if(pbScannerCode == NULL || cbScannerCode == 0)
+        nError = ERROR_CAN_NOT_COMPLETE;
+
+    // Get the installation directory of War3
+    if(nError == ERROR_SUCCESS)
+    {
+        if(!IsWarcraft3Installed(szWar3Dir, MAX_PATH))
+            nError = ERROR_CAN_NOT_COMPLETE;
+    }
+
+    // Create event that will be used by the hook code
+    if(nError == ERROR_SUCCESS)
+    {
+        pData->hEvent = CreateEvent(NULL, FALSE, TRUE, _T("MPQEditor_LiveScan_Event"));
+        if(pData->hEvent == NULL)
+            nError = GetLastError();
+    }
+
+    // Create file mapping that will be used by the hook code
+    if(nError == ERROR_SUCCESS)
+    {
+        DWORD cbNameBufferSize = (0x10000 - sizeof(STORM_SCAN_DATA));
+        DWORD cbToAllocate = sizeof(STORM_SCAN_DATA) + cbNameBufferSize;
+
+        // Prepare objects needed for the remote code
+        hMap = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, cbToAllocate, _T("MPQEditor_LiveScan_Data"));
+        if(hMap != NULL)
+        {
+            pScanData = (PSTORM_SCAN_DATA)MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+            if(pScanData != NULL)
+            {
+                pScanData->cbTotalSize = cbNameBufferSize;
+                pScanData->cbDataSize = 0;
+                pData->pScanData = pScanData;
+            }
+            else
+                nError = GetLastError();
+        }
+        else
+            nError = GetLastError();
+    }
+
+    // Create copy of the map
+    if(nError == ERROR_SUCCESS)
+    {
+        szCopyName = Worker_CreateCopyOfMap(pData, szWar3Dir);
+        if(szCopyName == NULL)
+            nError = GetLastError();
+    }
+
+    // Execute Warcraft III and force it to load the map
+    if(nError == ERROR_SUCCESS)
+    {
+        SetWorkerProgressText(hDlgWorker, _T("Launching Warcraft III ..."));
+        nError = Worker_LaunchTheGame(szWar3Dir, szCopyName, &pi);
+    }
+
+    // Allocate remote buffer
+    if(nError == ERROR_SUCCESS)
+    {
+        pvRemoteBuffer = VirtualAllocEx(pi.hProcess, NULL, cbScannerCode, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        if(pvRemoteBuffer == NULL)
+            nError = GetLastError();
+    }
+
+    // Copy the hook code to the buffer
+    if(nError == ERROR_SUCCESS)
+    {
+        WriteProcessMemory(pi.hProcess, pvRemoteBuffer, pbScannerCode, cbScannerCode, &cbWritten);
+        if(cbWritten != cbScannerCode)
+            nError = ERROR_WRITE_FAULT;
+    }
+
+    // Initialize the file mapping and change the thread context
+    if(nError == ERROR_SUCCESS)
+    {
+        nError = SetThreadStartAddress(pi.hThread, pvRemoteBuffer);
+        if(nError == ERROR_SUCCESS)
+        {
+            ResumeThread(pi.hThread);
+            pData->hProcess = pi.hProcess;
+
+            SetWorkerProgressText(hDlgWorker, _T("Scanning names ..."));
+            Worker_LiveScanModalLoop(pData);
+        }
+    }
+
+    // Delete the map
+    if(szCopyName != NULL)
+        DeleteFile(szCopyName);
+
+    // Free the buffers and exit
+    if(pi.hThread != NULL)
+        CloseHandle(pi.hThread);
+    if(pi.hProcess != NULL)
+        CloseHandle(pi.hProcess);
+    if(szCopyName != NULL)
+        delete [] szCopyName;
+    if(pScanData != NULL)
+        UnmapViewOfFile(pScanData);
+    if(hMap != NULL)
+        CloseHandle(hMap);
+    if(pData->hEvent != NULL)
+        CloseHandle(pData->hEvent);
+
+    // Clear the worker dialog handle
+    pData->hDlgWorker = NULL;
+    return nError;
+}
+
+static int WorkerMapScan(HWND hDlgWorker, LPVOID pvParam)
 {
     TNameScannerData * pData = (TNameScannerData *)pvParam;
 
@@ -1230,8 +1577,10 @@ static INT_PTR OnStartWork(HWND hDlg)
     TFileNameEntry * pNameEntry;
     PLIST_ENTRY pHeadEntry;
     PLIST_ENTRY pListEntry;
+    WORKERPROC pfnWorkerProc;
     LVITEMA lvi;
     HWND hWndStatus = GetDlgItem(hDlg, IDC_RESULT);
+    int nError;
 
     // Delete all names from the list view
     ListView_DeleteAllItems(pData->hListView);
@@ -1241,38 +1590,47 @@ static INT_PTR OnStartWork(HWND hDlg)
     FreeFileNameCache(pData);
 
     // Run the worker dialog
-    WorkerDialog(hDlg, IDS_SCANNING_FILE_NAMES, NameScannerWorker, pData);
+    pfnWorkerProc = (pData->nScannerMode == IDC_LIVE_SCAN) ? WorkerLiveScan : WorkerMapScan;
+    nError = (int)WorkerDialog(hDlg, IDS_SCANNING_FILE_NAMES, pfnWorkerProc, pData);
 
-    // Insert all found names to the dialog
-    if(pData->dwFoundNames != 0)
+    // If the worker dialog ended successfully, insert the names to the list
+    if(nError == ERROR_SUCCESS)
     {
-        // Disable redrawing
-        SendMessage(pData->hListView, WM_SETREDRAW, FALSE, 0);
-
-        // Fill the list view
-        for(DWORD i = 0; i < NAME_CACHE_SIZE; i++)
+        // Insert all found names to the dialog
+        if(pData->dwFoundNames != 0)
         {
-            // Is that hash entry occupied?
-            pHeadEntry = &pData->NameCache[i];
-            if(pHeadEntry->Flink && pHeadEntry->Blink)
+            // Disable redrawing
+            SendMessage(pData->hListView, WM_SETREDRAW, FALSE, 0);
+
+            // Fill the list view
+            for(DWORD i = 0; i < NAME_CACHE_SIZE; i++)
             {
-                for(pListEntry = pHeadEntry->Flink; pListEntry != pHeadEntry; pListEntry = pListEntry->Flink)
+                // Is that hash entry occupied?
+                pHeadEntry = &pData->NameCache[i];
+                if(pHeadEntry->Flink && pHeadEntry->Blink)
                 {
-                    pNameEntry = CONTAINING_RECORD(pListEntry, TFileNameEntry, Entry);
-                    
-                    ZeroMemory(&lvi, sizeof(LVITEMA));
-                    lvi.iItem   = 0x7FFFFFFF;
-                    lvi.mask    = LVIF_TEXT | LVIF_PARAM;
-                    lvi.pszText = pNameEntry->szFileName;
-                    lvi.lParam  = (LPARAM)pNameEntry;
-                    SendMessage(pData->hListView, LVM_INSERTITEMA, 0, (LPARAM)&lvi);
+                    for(pListEntry = pHeadEntry->Flink; pListEntry != pHeadEntry; pListEntry = pListEntry->Flink)
+                    {
+                        pNameEntry = CONTAINING_RECORD(pListEntry, TFileNameEntry, Entry);
+                        
+                        ZeroMemory(&lvi, sizeof(LVITEMA));
+                        lvi.iItem   = 0x7FFFFFFF;
+                        lvi.mask    = LVIF_TEXT | LVIF_PARAM;
+                        lvi.pszText = pNameEntry->szFileName;
+                        lvi.lParam  = (LPARAM)pNameEntry;
+                        SendMessage(pData->hListView, LVM_INSERTITEMA, 0, (LPARAM)&lvi);
+                    }
                 }
             }
-        }
 
-        // Enable redrawing
-        SendMessage(pData->hListView, WM_SETREDRAW, TRUE, 0);
-        InvalidateRect(pData->hListView, NULL, TRUE);
+            // Enable redrawing
+            SendMessage(pData->hListView, WM_SETREDRAW, TRUE, 0);
+            InvalidateRect(pData->hListView, NULL, TRUE);
+        }
+    }
+    else
+    {
+        MessageBoxError(hDlg, IDS_E_NAME_SCAN_FAILED, nError);
     }
 
     // Show the number of file names found
@@ -1409,58 +1767,67 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
     return FALSE;
 }
 
-INT_PTR NameScannerDialog(HWND hParent, HANDLE hMpq, LPCTSTR szListFile)
+static INT_PTR NameScannerDialog(HWND hParent, TNameScannerData * pData, LPCTSTR szListFile, UINT nScannerMode)
 {
-    TNameScannerData * pData;
-    INT_PTR nResult = IDCANCEL;
     DWORD dwMpqFlags = 0;
 
     // Check whether the MPQ is a warcraft III map
-    SFileGetFileInfo(hMpq, SFileMpqFlags, &dwMpqFlags, sizeof(DWORD), NULL);
+    SFileGetFileInfo(pData->hMpq, SFileMpqFlags, &dwMpqFlags, sizeof(DWORD), NULL);
     if((dwMpqFlags & MPQ_FLAG_WAR3_MAP) == 0)
     {
         if(MessageBoxRc(hParent, IDS_QUESTION, IDS_NOT_WARCRAFT3MAP) != IDYES)
             return IDCANCEL;
     }
 
+    // Supply the listfile name and the scanner mode
+    pData->szListFile = szListFile;
+    pData->nScannerMode = nScannerMode;
+    return DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_NAME_SCANNER), hParent, DialogProc, (LPARAM)pData);
+}
+
+INT_PTR NameScannerDialog(HWND hParent, LPCTSTR szMpqName, LPCTSTR szListFile, HANDLE hMpq, UINT nScannerMode)
+{
+    TNameScannerData * pData;
+    INT_PTR nResult = IDCANCEL;
+    DWORD cbFileName = 0;
+
     // Allocate the name scanner data
     pData = (TNameScannerData *)HeapAlloc(g_hHeap, HEAP_ZERO_MEMORY, sizeof(TNameScannerData));
     if(pData != NULL)
     {
-        // Fill the already-known variables
-        pData->szListFile = szListFile;
-        pData->hMpq = hMpq;
-
-        // Execute the dialog
-        nResult = DialogBoxParam(g_hInst, MAKEINTRESOURCE(IDD_NAME_SCANNER), hParent, DialogProc, (LPARAM)pData);
-        HeapFree(g_hHeap, 0, pData);
-    }
-
-    return nResult;
-}
-
-INT_PTR NameScannerDialog(HWND hParent, LPCTSTR szMpqName, LPCTSTR szListFile)
-{
-    INT_PTR nResult = IDCANCEL;
-    HANDLE hMpq = NULL;
-
-    // The MPQ name must not be NULL
-    if(szMpqName != NULL)
-    {
-        // Attempt to open the MPQ
-        if(SFileOpenArchive(szMpqName, 0, 0, &hMpq))
+        // Case 1: The MPQ was entered by handle
+        if(szMpqName == NULL && hMpq != NULL)
         {
-            nResult = NameScannerDialog(hParent, hMpq, szListFile);
-            SFileCloseArchive(hMpq);
+            SFileGetFileInfo(hMpq, SFileMpqFileName, NULL, 0, &cbFileName);
+            pData->szMpqName = (LPTSTR)HeapAlloc(g_hHeap, 0, cbFileName);
+            if(pData->szMpqName != NULL)
+            {
+                SFileGetFileInfo(hMpq, SFileMpqFileName, pData->szMpqName, cbFileName, &cbFileName);
+                pData->hMpq = hMpq;
+                nResult = NameScannerDialog(hParent, pData, szListFile, nScannerMode);
+                HeapFree(g_hHeap, 0, pData->szMpqName);
+            }
         }
+
+        // Case 2: The MPQ was entered by file name
+        else if(szMpqName != NULL && hMpq == NULL)
+        {
+            if(SFileOpenArchive(szMpqName, 0, MPQ_OPEN_READ_ONLY, &pData->hMpq))
+            {
+                pData->szMpqName = (LPTSTR)szMpqName;
+                nResult = NameScannerDialog(hParent, pData, szListFile, nScannerMode);
+                SFileCloseArchive(pData->hMpq);
+            }
+        }
+        
+        // Invalid parameters
         else
         {
-            MessageBoxError(hParent, IDS_E_OPEN_MPQ, GetLastError(), szMpqName);
+            MessageBoxError(NULL, IDS_E_BAD_NB_CMD_LINE);
         }
-    }
-    else
-    {
-        MessageBoxError(NULL, IDS_E_BAD_NB_CMD_LINE);
+
+        // Free the data
+        HeapFree(g_hHeap, 0, pData);
     }
 
     return nResult;
