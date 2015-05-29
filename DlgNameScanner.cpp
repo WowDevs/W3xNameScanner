@@ -17,6 +17,7 @@
 #define FILE_SIGNATURE_BLP  0x31504C42
 #define FILE_SIGNATURE_MP3  0x03334449
 #define FILE_SIGNATURE_MDX  0x584C444D
+#define FILE_SIGNATURE_SLK  0x503B4449
 #define FILE_SIGNATURE_TEXT 0x00545854
 
 #define MAX_SINGLE_NAME 0x1000              // The longest length of a single name
@@ -66,13 +67,6 @@ struct TStringInfo
     const char * szString;
 };
 
-struct TObjectInfo
-{
-    const char * szObjectFile;
-    const char * szObjectIdFile;
-    const char * szModIdFile;
-};
-
 struct TFileNameEntry
 {
     LIST_ENTRY Entry;                       // Link to other entries
@@ -114,9 +108,13 @@ static TListViewColumns Columns[] =
 
 static TStringInfo DirectoryNames[] = 
 {
-    {0x0023, "ReplaceableTextures\\CommandButtons\\"},
-    {0x002B, "ReplaceableTextures\\CommandButtonsDisabled\\"},
-    {0x002E, "ReplaceableTextures\\CommandButtonsDisabled\\DIS"},
+    {0x06, "Fonts\\"},
+    {0x23, "ReplaceableTextures\\CommandButtons\\"},
+    {0x2B, "ReplaceableTextures\\CommandButtonsDisabled\\"},
+    {0x2E, "ReplaceableTextures\\CommandButtonsDisabled\\DIS"},
+    {0x31, "ReplaceableTextures\\CommandButtonsDisabled\\DISDIS"},
+    {0x23, "ReplaceableTextures\\PassiveButtons\\"},
+    {0x10, "war3mapImported\\"},
     {0,  NULL}
 };
 
@@ -136,20 +134,85 @@ static TStringInfo Extensions[] =
 static TStringInfo ImgExtensions[] =
 {
     {4, ".blp"},
+    {4, ".mdx"},
     {4, ".tga"},
     {0, NULL}
 };
 
-static TObjectInfo ObjectFiles[] = 
+static TStringInfo KnownTextFiles_L1[] =
 {
-    {"war3map.w3a", "Units\\AbilityData.slk",      "Units\\AbilityMetaData.slk"},       // Abilities
-    {"war3map.w3b", "Units\\DestructableData.slk", "Units\\DestructableMetaData.slk"},  // Destructables
-    {"war3map.w3d", "Doodads\\Doodads.slk",        "Doodads\\DoodadMetaData.slk"},      // Doodads file
-    {"war3map.w3h", "Units\\AbilityBuffData.slk",  "Units\\AbilityBuffMetaData.slk"},   // Buffs file
-    {"war3map.w3q", "Units\\UpgradeData.slk",      "Units\\UpgradeMetaData.slk"},       // Upgrades file
-    {"war3map.w3t", "Units\\ItemData.slk",         "Units\\ItemMetaData.slk"},          // Items file
-    {"war3map.w3u", "Units\\UnitData.slk",         "Units\\UnitMetaData.slk"},          // Units file
-    {NULL}
+    {8, "Campaign"},
+    {6, "Common"},
+    {5, "Human"},
+    {4, "Item"},
+    {7, "Neutral"},
+    {8, "NightElf"},
+    {3, "Orc"},
+    {6, "Undead"},
+    {4, "Unit"},
+    {7, "Upgrade"},
+    {0, NULL},
+};
+
+static TStringInfo KnownTextFiles_L2[] =
+{
+    {0, ""},
+    {7, "Ability"},
+    {4, "Unit"},
+    {7, "Upgrade"},
+    {0, NULL},
+};
+
+static TStringInfo KnownTextFiles_L3[] =
+{
+    {4, "Data"},
+    {4, "Func"},
+    {7, "Strings"},
+    {0, NULL},
+};
+
+static TStringInfo KnownSlkFiles_L1[] =
+{
+    {0x7, "Ability"},
+    {0x8, "Ambience"},
+    {0x4, "Anim"},
+    {0x5, "Cliff"},
+    {0xC, "Destructable"},
+    {0x6, "Dialog"},
+    {0x6, "Doodad"},
+    {0xB, "Environment"},
+    {0x4, "Item"},
+    {0x9, "Lightning"},
+    {0x4, "Misc"},
+    {0xC, "NotUsed_Unit"},
+    {0x8, "Portrait"},
+    {0x4, "Skin"},
+    {0x5, "Spawn"},
+    {0x5, "Splat"},
+    {0x9, "UberSplat"},
+    {0x2, "UI"},
+    {0x4, "Unit"},
+    {0xA, "UnitCombat"},
+    {0x7, "Upgrade"},
+    {0x0, NULL},
+};
+
+static TStringInfo KnownSlkFiles_L2[] =
+{
+    {0x9, "Abilities"},
+    {0x5, "Anims"},
+    {0x7, "Balance"},
+    {0x8, "BuffData"},
+    {0xC, "BuffMetaData"},
+    {0x4, "Data"},
+    {0x7, "Lookups"},
+    {0x8, "MetaData"},
+    {0x1, "s"},
+    {0x6, "Sounds"},
+    {0x5, "Types"},
+    {0x2, "UI"},
+    {0x7, "Weapons"},
+    {0x0, NULL},
 };
 
 static const char * JassFiles[] = 
@@ -163,13 +226,12 @@ static const char * JassFiles[] =
     NULL
 };
 
+// Note: "war3map.w3?" files are covered by extra loop from 'a' to 'z'
 static const char * KnownFiles[] = 
 {
     LISTFILE_NAME,
     ATTRIBUTES_NAME,
     SIGNATURE_NAME,
-    "war3map.w3e",
-    "war3map.w3i",
     "war3map.wtg",
     "war3map.wct",
     "war3map.wts",
@@ -179,15 +241,6 @@ static const char * KnownFiles[] =
     "war3map.wpm",
     "war3map.doo",
     "war3map.imp",
-    "war3map.w3r",
-    "war3map.w3c",
-    "war3map.w3s",
-    "war3map.w3u",
-    "war3map.w3t",
-    "war3map.w3a",
-    "war3map.w3b",
-    "war3map.w3d",
-    "war3map.w3q",
     "war3mapMap.blp",
     "war3mapMap.b00",
     "war3mapMap.tga",
@@ -198,6 +251,18 @@ static const char * KnownFiles[] =
     "war3mapExtra.txt",
     "war3mapPreview.tga",
     NULL
+};
+
+static const char * ObjectFiles[] = 
+{
+    "war3map.w3a",      // Abilities
+    "war3map.w3b",      // Destructables
+    "war3map.w3d",      // Doodads file
+    "war3map.w3h",      // Buffs file
+    "war3map.w3q",      // Upgrades file
+    "war3map.w3t",      // Items file
+    "war3map.w3u",      // Units file
+    {NULL}
 };
 
 // Table of characters that are allowed to be the begin of file name
@@ -268,6 +333,12 @@ static void CheckStringLengths(TStringInfo * pStrings)
 }
 #endif // _DEBUG
 
+// Check for "C;X3;K"
+static bool CheckForX3Tag(LPBYTE pbLineBegin, LPBYTE pbLineEnd)
+{
+    return ((pbLineEnd - pbLineBegin) > 6 && memcmp(pbLineBegin, "C;X3;K", 6) == 0);
+}
+
 static bool IsTextFile(LPBYTE pbFileData, DWORD cbFileData)
 {
     DWORD PrintableCount = 0;
@@ -285,10 +356,6 @@ static bool IsTextFile(LPBYTE pbFileData, DWORD cbFileData)
 
         // UTF-8 files from Warcraft III are treated as text files
         if(pbFileData[0] == 0xEF && pbFileData[1] == 0xBB && pbFileData[2] == 0xBF)
-            return true;
-
-        // SKL files
-        if(!memcmp(pbFileData, "ID;PWXL;N;E", 11))
             return true;
     }
 
@@ -346,6 +413,10 @@ static DWORD GetFileType(LPBYTE pbFileData, DWORD cbFileData)
         return dwSignature;
     }
 
+    // SLK files
+    if(!memcmp(pbFileData, "ID;PWXL;N;E", 11))
+        return FILE_SIGNATURE_SLK;
+
     if(IsTextFile(pbFileData, cbFileData))
         return FILE_SIGNATURE_TEXT;
 
@@ -371,7 +442,70 @@ static void NormalizeQuotedString(LPBYTE pbQuotedStr, LPBYTE pbQuotedEnd)
     pbTarget[0] = 0;
 }
 
-static void ConstructFullName(
+static bool ExtractQuotedString(
+    LPBYTE pbLineBegin,
+//  LPBYTE pbLineEnd,
+    LPSTR * PtrStringBegin,
+    LPSTR * PtrStringEnd)
+{
+    LPSTR szStringBegin;
+    LPSTR szStringEnd;
+
+    // Find the begin of the string
+    szStringBegin = strchr((char *)pbLineBegin, '\"');
+    if(szStringBegin == NULL)
+        return false;
+
+    // Find the end of the string
+    szStringEnd = strchr(++szStringBegin, '\"');
+    
+    PtrStringBegin[0] = szStringBegin;
+    PtrStringEnd[0] = szStringEnd;
+    return (szStringEnd > szStringBegin);
+}
+
+static bool ExtractSingleLine(
+    LPBYTE pbFileData,
+    LPBYTE pbFileEnd,
+    LPBYTE * PtrLineBegin,
+    LPBYTE * PtrEqualSign,
+    LPBYTE * PtrCommaPtr,
+    LPBYTE * PtrLineEnd)
+{
+    LPBYTE pbLineBegin = NULL;
+    LPBYTE pbEqualSign = NULL;
+    LPBYTE pbCommaPtr = NULL;
+
+    // Skip all sub-space chars to find the begin of the line
+    while(pbFileData < pbFileEnd && pbFileData[0] <= 0x20)
+        pbFileData++;
+    pbLineBegin = pbFileData;
+
+    // Find the end of the line
+    while(pbFileData < pbFileEnd && pbFileData[0] != 0x0A && pbFileData[0] != 0x0D)
+    {
+        if(pbFileData[0] == '=')
+            pbEqualSign = pbFileData;
+        if(pbFileData[0] == ',')
+            pbCommaPtr = pbFileData;
+        pbFileData++;
+    }
+
+    // Terminate the line and skip it
+    if(pbFileData < pbFileEnd && (pbFileData[0] == 0x0A || pbFileData[0] == 0x0D))
+        *pbFileData = 0;
+
+    // Give all pointers to the caller
+    PtrLineBegin[0] = pbLineBegin;
+    PtrEqualSign[0] = pbEqualSign;
+    PtrCommaPtr[0] = pbCommaPtr;
+    PtrLineEnd[0] = pbFileData;
+
+    // Return true if the line is there
+    return (pbLineBegin < pbFileEnd);
+}
+
+static void ConstructFullName1(
     char * szBuffer,
     const char * szDirectoryName,
     size_t cbDirectoryName,
@@ -405,6 +539,32 @@ static void ConstructFullName(
         }
     }
 
+    szBuffer[0] = 0;
+}
+
+static void ConstructFullName2(
+    char * szBuffer,
+    const char * szDirNameBegin,
+    const char * szDirNameEnd,
+    const char * szPlainName,
+    const char * szPlainNameEnd)
+{
+    // Check the length
+    if((szDirNameEnd - szDirNameBegin) + 1 + (szPlainNameEnd - szPlainName) <= MAX_PATH)
+    {
+        // Copy the directory name
+        memcpy(szBuffer, szDirNameBegin, (szDirNameEnd - szDirNameBegin));
+        szBuffer += (szDirNameEnd - szDirNameBegin);
+
+        // Put the backslash
+        *szBuffer++ = '\\';
+
+        // Copy the plain name
+        memcpy(szBuffer, szPlainName, (szPlainNameEnd - szPlainName));
+        szBuffer += (szPlainNameEnd - szPlainName);
+    }
+
+    // Terminate the buffer
     szBuffer[0] = 0;
 }
 
@@ -549,6 +709,55 @@ static bool CheckFileName(TNameScannerData * pData, const char * szFileName)
     return bResult;
 }
 
+static LPBYTE LoadMpqFileToMemory(TNameScannerData * pData, const char * szFileName, PDWORD PtrFileSize)
+{
+    HANDLE hFile = NULL;
+    LPBYTE pbFileData = NULL;
+    DWORD dwFileSize = 0;
+
+    // Attempt to open the file
+    if(SFileOpenFileEx(pData->hMpq, szFileName, 0, &hFile))
+    {
+        // Retrieve the file size
+        dwFileSize = SFileGetFileSize(hFile, NULL);
+        if(dwFileSize != 0 && (dwFileSize & 0xFF000000) == 0)
+        {
+            // Allocate buffer for the file data
+            pbFileData = (LPBYTE)HeapAlloc(g_hHeap, 0, dwFileSize + 1);
+            if(pbFileData != NULL)
+            {
+                DWORD dwBytesRead = 0;
+
+                // Load the entire file to memory
+                SFileReadFile(hFile, pbFileData, dwFileSize, &dwBytesRead, NULL);
+                pbFileData[dwFileSize] = 0;
+
+                // If failed, free the buffer
+                if(dwBytesRead == dwFileSize)
+                {
+                    if(!IsPseudoFileName(szFileName))
+                    {
+                        InsertFileName(pData, szFileName);
+                    }
+                }
+                else
+                {
+                    HeapFree(g_hHeap, 0, pbFileData);
+                    pbFileData = NULL;
+                    dwFileSize = 0;
+                }
+            }
+        }
+
+        // Close the file
+        SFileCloseFile(hFile);
+    }
+
+    // Return what we got
+    PtrFileSize[0] = dwFileSize;
+    return pbFileData;
+}
+
 static void CheckNameVariants(TNameScannerData * pData, const char * szFullName)
 {
     char * szPlainName = GetPlainName(szFullName);
@@ -564,19 +773,22 @@ static void CheckNameVariants(TNameScannerData * pData, const char * szFullName)
 
 __RetrySearch:
 
-    // Attempt to search full name with all known extensions
-    for(i = 0; Extensions[i].szString != NULL; i++)
-    {
-        ConstructFullName(szBuffer, NULL, 0, szFullName, cbFullName, Extensions[i].szString, Extensions[i].cbLength);
-        CheckFileName(pData, szBuffer);
-    }
-
     // Attempt to search plain name with all known extensions
     if(szPlainName > szFullName)
     {
         for(i = 0; Extensions[i].szString != NULL; i++)
         {
-            ConstructFullName(szBuffer, NULL, 0, szPlainName, cbPlainName, Extensions[i].szString, Extensions[i].cbLength);
+            ConstructFullName1(szBuffer, NULL, 0, szPlainName, cbPlainName, Extensions[i].szString, Extensions[i].cbLength);
+            CheckFileName(pData, szBuffer);
+        }
+    }
+
+    // Attempt to search full name with all known extensions
+    if(szFullName != szPlainName)
+    {
+        for(i = 0; Extensions[i].szString != NULL; i++)
+        {
+            ConstructFullName1(szBuffer, NULL, 0, szFullName, cbFullName, Extensions[i].szString, Extensions[i].cbLength);
             CheckFileName(pData, szBuffer);
         }
     }
@@ -587,12 +799,12 @@ __RetrySearch:
         // Circulate all extensions
         for(j = 0; ImgExtensions[j].szString != NULL; j++)
         {
-            ConstructFullName(szBuffer, DirectoryNames[i].szString, 
-                                        DirectoryNames[i].cbLength,
-                                        szPlainName,
-                                        cbPlainName,
-                                        ImgExtensions[j].szString,
-                                        ImgExtensions[j].cbLength);
+            ConstructFullName1(szBuffer, DirectoryNames[i].szString, 
+                                         DirectoryNames[i].cbLength,
+                                         szPlainName,
+                                         cbPlainName,
+                                         ImgExtensions[j].szString,
+                                         ImgExtensions[j].cbLength);
             CheckFileName(pData, szBuffer);
         }
     }
@@ -701,48 +913,6 @@ static void CheckNameVariantsForLine(
     }
 }
 
-static LPBYTE LoadMpqFileToMemory(TNameScannerData * pData, const char * szFileName, PDWORD PtrFileSize)
-{
-    HANDLE hFile = NULL;
-    LPBYTE pbFileData = NULL;
-    DWORD dwFileSize = 0;
-
-    // Attempt to open the file
-    if(SFileOpenFileEx(pData->hMpq, szFileName, 0, &hFile))
-    {
-        // Retrieve the file size
-        dwFileSize = SFileGetFileSize(hFile, NULL);
-        if(dwFileSize != 0 && (dwFileSize & 0xFF000000) == 0)
-        {
-            // Allocate buffer for the file data
-            pbFileData = (LPBYTE)HeapAlloc(g_hHeap, 0, dwFileSize + 1);
-            if(pbFileData != NULL)
-            {
-                DWORD dwBytesRead = 0;
-
-                // Load the entire file to memory
-                SFileReadFile(hFile, pbFileData, dwFileSize, &dwBytesRead, NULL);
-                pbFileData[dwFileSize] = 0;
-
-                // If failed, free the buffer
-                if(dwBytesRead != dwFileSize)
-                {
-                    HeapFree(g_hHeap, 0, pbFileData);
-                    pbFileData = NULL;
-                    dwFileSize = 0;
-                }
-            }
-        }
-
-        // Close the file
-        SFileCloseFile(hFile);
-    }
-
-    // Return what we got
-    PtrFileSize[0] = dwFileSize;
-    return pbFileData;
-}
-
 static void Worker_ScanListFile(TNameScannerData * pData, LPCTSTR szListFile)
 {
     SFILE_FIND_DATA sf;
@@ -768,6 +938,106 @@ static void Worker_ScanListFile(TNameScannerData * pData, LPCTSTR szListFile)
         // Close the 
         SListFileFindClose(hFind);
     }
+}
+
+static void Worker_ScanKnownTextFiles(TNameScannerData * pData)
+{
+    char szNameBuff[MAX_PATH];
+    char * szNamePtr1 = szNameBuff + 6;
+
+    // Prepare the begin of the name buffer
+    memcpy(szNameBuff, "Units\\", 6);
+
+    // All combinations for name part level 1
+    for(int i1 = 0; KnownTextFiles_L1[i1].szString != NULL; i1++)
+    {
+        // Get permanent pointer where the level-2 part will be copied
+        char * szNamePtr2 = szNamePtr1;
+
+        // Copy the level-1 part of the name
+        memcpy(szNamePtr2, KnownTextFiles_L1[i1].szString, KnownTextFiles_L1[i1].cbLength);
+        szNamePtr2 += KnownTextFiles_L1[i1].cbLength;
+
+        // All combinations for name part level 2
+        for(int i2 = 0; KnownTextFiles_L2[i2].szString != NULL; i2++)
+        {
+            // Get permanent pointer where the level-3 part will be copied
+            char * szNamePtr3 = szNamePtr2;
+
+            // Copy the level-2 part of the name
+            memcpy(szNamePtr3, KnownTextFiles_L2[i2].szString, KnownTextFiles_L2[i2].cbLength);
+            szNamePtr3 += KnownTextFiles_L2[i2].cbLength;
+
+            // All combinations for name part level 2
+            for(int i3 = 0; KnownTextFiles_L3[i3].szString != NULL; i3++)
+            {
+                char * szNamePtr = szNamePtr3;
+
+                // Copy the level-3 part of the name
+                memcpy(szNamePtr, KnownTextFiles_L3[i3].szString, KnownTextFiles_L3[i3].cbLength);
+                szNamePtr += KnownTextFiles_L3[i3].cbLength;
+
+                // Append extension
+                *szNamePtr++ = '.';
+                *szNamePtr++ = 't';
+                *szNamePtr++ = 'x';
+                *szNamePtr++ = 't';
+                *szNamePtr++ = 0;
+
+                // Check than name
+                CheckFileName(pData, szNameBuff);
+            }
+        }
+    }
+}
+
+static void Worker_ScanKnownSlkFiles(TNameScannerData * pData, const char * szPrefix, size_t cchPrefix)
+{
+    char szNameBuff[MAX_PATH];
+    char * szNamePtr1 = szNameBuff + cchPrefix;
+
+    // Prepare the begin of the name buffer
+    assert(cchPrefix < 0x20);
+    memcpy(szNameBuff, szPrefix, cchPrefix);
+
+    // All combinations for name part level 1
+    for(int i1 = 0; KnownSlkFiles_L1[i1].szString != NULL; i1++)
+    {
+        // Get permanent pointer where the level-2 part will be copied
+        char * szNamePtr2 = szNamePtr1;
+
+        // Copy the level-1 part of the name
+        memcpy(szNamePtr2, KnownSlkFiles_L1[i1].szString, KnownSlkFiles_L1[i1].cbLength);
+        szNamePtr2 += KnownSlkFiles_L1[i1].cbLength;
+
+        // All combinations for name part level 2
+        for(int i2 = 0; KnownSlkFiles_L2[i2].szString != NULL; i2++)
+        {
+            // Get permanent pointer where the level-3 part will be copied
+            char * szNamePtr = szNamePtr2;
+
+            // Copy the level-2 part of the name
+            memcpy(szNamePtr, KnownSlkFiles_L2[i2].szString, KnownSlkFiles_L2[i2].cbLength);
+            szNamePtr += KnownSlkFiles_L2[i2].cbLength;
+
+            // Append extension
+            *szNamePtr++ = '.';
+            *szNamePtr++ = 's';
+            *szNamePtr++ = 'l';
+            *szNamePtr++ = 'k';
+            *szNamePtr++ = 0;
+
+            // Check than name
+            CheckFileName(pData, szNameBuff);
+        }
+    }
+}
+
+static void Worker_ScanKnownSlkFiles(TNameScannerData * pData)
+{
+    Worker_ScanKnownSlkFiles(pData, "Doodads\\", 8);
+    Worker_ScanKnownSlkFiles(pData, "Splats\\", 7);
+    Worker_ScanKnownSlkFiles(pData, "Units\\", 6);
 }
 
 static void Worker_ScanTwoCharFileNames(TNameScannerData * pData)
@@ -918,9 +1188,6 @@ static void Worker_ScanJassFiles(TNameScannerData * pData)
         LPBYTE pbFileData;
         DWORD cbFileData = 0;
 
-        // Try the file name itself
-        CheckFileName(pData, JassFiles[i]);
-
         // Try to load the file to memory
         pbFileData = LoadMpqFileToMemory(pData, JassFiles[i], &cbFileData);
         if(pbFileData != NULL)
@@ -935,18 +1202,13 @@ static void Worker_ScanJassFiles(TNameScannerData * pData)
 static void Worker_ScanObjectFiles(TNameScannerData * pData)
 {
     // For all object files: check all string values
-    for(int i = 0; ObjectFiles[i].szObjectFile != NULL; i++)
+    for(int i = 0; ObjectFiles[i] != NULL; i++)
     {
         LPBYTE pbFileData;
         DWORD cbFileData = 0;
 
-        // Try the file name itself
-        CheckFileName(pData, ObjectFiles[i].szObjectFile);
-        CheckFileName(pData, ObjectFiles[i].szObjectIdFile);
-        CheckFileName(pData, ObjectFiles[i].szModIdFile);
-
         // Try to load the file to memory
-        pbFileData = LoadMpqFileToMemory(pData, ObjectFiles[i].szObjectFile, &cbFileData);
+        pbFileData = LoadMpqFileToMemory(pData, ObjectFiles[i], &cbFileData);
         if(pbFileData != NULL)
         {
             // Search the text file for quoted strings
@@ -963,81 +1225,62 @@ static void Worker_ScanW3IFile(TNameScannerData * pData)
     DWORD cbFileData = 0;
     DWORD dwFileFormat = 0;
 
-    if(CheckFileName(pData, szFileName))
+    pbFileData = LoadMpqFileToMemory(pData, szFileName, &cbFileData);
+    if(pbFileData != NULL)
     {
-        pbFileData = LoadMpqFileToMemory(pData, szFileName, &cbFileData);
-        if(pbFileData != NULL)
+        LPBYTE pbFilePtr = pbFileData;
+        LPBYTE pbFileEnd = pbFileData + cbFileData;
+
+        // Get the file format
+        if((pbFilePtr + sizeof(DWORD)) <= pbFileEnd)
+            dwFileFormat = *(PDWORD)pbFilePtr;
+        pbFilePtr += sizeof(DWORD);
+
+        // Only format 25 has the loading screen
+        if(dwFileFormat == 18 || dwFileFormat == 25)
         {
-            LPBYTE pbFilePtr = pbFileData;
-            LPBYTE pbFileEnd = pbFileData + cbFileData;
+            // Skip next two DWORDS
+            pbFilePtr += sizeof(DWORD) + sizeof(DWORD);
 
-            // Get the file format
-            if((pbFilePtr + sizeof(DWORD)) <= pbFileEnd)
-                dwFileFormat = *(PDWORD)pbFilePtr;
-            pbFilePtr += sizeof(DWORD);
+            // Skip four strings (map name, map author, map description, players recommended)
+            for(int i = 0; i < 4 && pbFilePtr < pbFileEnd; i++)
+                pbFilePtr += strlen((char *)pbFilePtr) + 1;
 
-            // Only format 25 has the loading screen
-            if(dwFileFormat == 18 || dwFileFormat == 25)
-            {
-                // Skip next two DWORDS
-                pbFilePtr += sizeof(DWORD) + sizeof(DWORD);
+            // Skip camera bounds and camera bounds complements
+            pbFilePtr += 32 + 16;
 
-                // Skip four strings (map name, map author, map description, players recommended)
-                for(int i = 0; i < 4 && pbFilePtr < pbFileEnd; i++)
-                    pbFilePtr += strlen((char *)pbFilePtr) + 1;
+            // Skip map width, map height, flags, map main ground type, loading screen number/game data set
+            pbFilePtr += sizeof(DWORD) + sizeof(DWORD) + sizeof(DWORD) + sizeof(BYTE) + sizeof(DWORD);
 
-                // Skip camera bounds and camera bounds complements
-                pbFilePtr += 32 + 16;
-
-                // Skip map width, map height, flags, map main ground type, loading screen number/game data set
-                pbFilePtr += sizeof(DWORD) + sizeof(DWORD) + sizeof(DWORD) + sizeof(BYTE) + sizeof(DWORD);
-
-                // Check for the game loading map
-                if(dwFileFormat == 25 && pbFilePtr < pbFileEnd)
-                    CheckFileName(pData, (char *)pbFilePtr);
-            }
-
-            // Free the file data
-            HeapFree(g_hHeap, 0, pbFileData);
+            // Check for the game loading map
+            if(dwFileFormat == 25 && pbFilePtr < pbFileEnd)
+                CheckFileName(pData, (char *)pbFilePtr);
         }
+
+        // Free the file data
+        HeapFree(g_hHeap, 0, pbFileData);
     }
 }
 
 static void Worker_ScanTextFile(TNameScannerData * pData, LPBYTE pbFileData, DWORD cbFileData)
 {
     LPBYTE pbFileEnd = pbFileData + cbFileData;
-    LPBYTE pbLineBegin;
+    LPBYTE pbLineBegin = NULL;
+    LPBYTE pbEqualSign = NULL;
+    LPBYTE pbCommaPtr = NULL;
+    LPBYTE pbLineEnd = NULL;
 
     // Work until we find the end of the file
-    while(pbFileData < pbFileEnd)
+    while(ExtractSingleLine(pbFileData, pbFileEnd, &pbLineBegin, &pbEqualSign, &pbCommaPtr, &pbLineEnd))
     {
-        LPBYTE pbEqualSign = NULL;
-        LPBYTE pbCommaPtr = NULL;
-
-        // Find the begin of the line
-        while(pbFileData < pbFileEnd && pbFileData[0] <= 0x20)
-            pbFileData++;
-        pbLineBegin = pbFileData;
-
-        // Find the end of the line
-        while(pbFileData < pbFileEnd && pbFileData[0] != 0 && pbFileData[0] != 0x0A && pbFileData[0] != 0x0D)
-        {
-            if(pbFileData[0] == '=')
-                pbEqualSign = pbFileData;
-            if(pbFileData[0] == ',')
-                pbCommaPtr = pbFileData;
-            pbFileData++;
-        }
-
-        // Terminate the line and skip it
-        while(pbFileData < pbFileEnd && (pbFileData[0] == 0 || pbFileData[0] == 0x0A || pbFileData[0] == 0x0D))
-            *pbFileData++ = 0;
-
-        // Cut the line
-        if(pbFileData > pbLineBegin)
+        // If the line hash nonzero size, scan it
+        if(pbLineEnd > pbLineBegin)
         {
             CheckNameVariantsForLine(pData, (char *)pbLineBegin, (char *)pbEqualSign, (char *)pbCommaPtr);
         }
+
+        // Move to the next line and repeat
+        pbFileData = pbLineEnd;
     }
 }
 
@@ -1139,6 +1382,85 @@ static void Worker_ScanMdxFile(TNameScannerData * pData, LPBYTE pbFileData, DWOR
     }
 }
 
+//
+// Discover file names from the SLK strings, like this:
+// "ReplaceableTextures\Splats\SunRaySplat.blp"
+//
+// C;X7;K0.5
+// C;X6;K100
+// C;X4;K"SunRaySplat"                  <=== Plain Name, without extension
+// C;X3;K"ReplaceableTextures\Splats"   <=== Directory name
+// C;X2;K"SunRay"
+// C;X1;K"SRAY"
+// C;Y59;K"IPTH"
+static void Worker_ScanSlkFile(TNameScannerData * pData, LPBYTE pbFileData, DWORD cbFileData)
+{
+    LPBYTE pbFileEnd = pbFileData + cbFileData;
+    LPBYTE pbLineBegin = NULL;
+    LPBYTE pbEqualSign = NULL;
+    LPBYTE pbCommaPtr = NULL;
+    LPBYTE pbLineEnd = NULL;
+    char * szPrevDirectory = NULL;
+    char * szPrevDirectEnd = NULL;
+    char * szPrevFileName = NULL;
+    char * szPrevNameEnd = NULL;
+    char * szStringBegin = NULL;
+    char * szStringEnd = NULL;
+    char szNameBuff[MAX_PATH+1];
+
+    // Work until we find the end of the file
+    while(ExtractSingleLine(pbFileData, pbFileEnd, &pbLineBegin, &pbEqualSign, &pbCommaPtr, &pbLineEnd))
+    {
+        // Attempt to extract quoted string from the line
+        if(ExtractQuotedString(pbLineBegin, &szStringBegin, &szStringEnd))
+        {
+            // Terminate the quoted string
+            szStringEnd[0] = 0;
+
+            // Check the variants for the quoted string name as-is
+            CheckNameVariantsForLine(pData, szStringBegin, NULL, (char *)pbCommaPtr);
+
+            // If we encountered a directory name, also check with the previous file
+            // If we encountered a file name, also check with the previous directory
+            if(CheckForX3Tag(pbLineBegin, pbLineEnd))
+            {
+                // Directory: If we had file name before, check them together
+                if(szPrevFileName != NULL)
+                {
+                    ConstructFullName2(szNameBuff, szStringBegin,
+                                                   szStringEnd,
+                                                   szPrevFileName,
+                                                   szPrevNameEnd);
+                    CheckNameVariants(pData, szNameBuff);
+                }
+
+                // Remember that we had directory
+                szPrevDirectory = szStringBegin;
+                szPrevDirectEnd = szStringEnd;
+            }
+            else
+            {
+                // File name: If we had file name before, check them together
+                if(szPrevDirectory != NULL)
+                {
+                    ConstructFullName2(szNameBuff, szPrevDirectory,
+                                                   szPrevDirectEnd,
+                                                   szStringBegin,
+                                                   szStringEnd);
+                    CheckNameVariants(pData, szNameBuff);
+                }
+
+                // Remember that we had file name
+                szPrevFileName = szStringBegin;
+                szPrevNameEnd = szStringEnd;
+            }
+        }
+
+        // Move to the next line and repeat
+        pbFileData = pbLineEnd;
+    }
+}
+
 static void Worker_ScanFileData(TNameScannerData * pData)
 {
     LPBYTE pbFileData;
@@ -1175,14 +1497,19 @@ static void Worker_ScanFileData(TNameScannerData * pData)
                 dwFileSignature = GetFileType(pbFileData, dwFileSize);
                 switch(dwFileSignature)
                 {
-                    case FILE_SIGNATURE_TEXT:
-                        SetWorkerProgressText(pData->hDlgWorker, szProgressText);
-                        Worker_ScanTextFile(pData, pbFileData, dwFileSize);
-                        break;
-
                     case FILE_SIGNATURE_MDX:
                         SetWorkerProgressText(pData->hDlgWorker, szProgressText);
                         Worker_ScanMdxFile(pData, pbFileData, dwFileSize);
+                        break;
+
+                    case FILE_SIGNATURE_SLK:
+                        SetWorkerProgressText(pData->hDlgWorker, szProgressText);
+                        Worker_ScanSlkFile(pData, pbFileData, dwFileSize);
+                        break;
+
+                    case FILE_SIGNATURE_TEXT:
+                        SetWorkerProgressText(pData->hDlgWorker, szProgressText);
+                        Worker_ScanTextFile(pData, pbFileData, dwFileSize);
                         break;
                 }
             }
@@ -1198,6 +1525,15 @@ static void Worker_ScanKnownFiles(TNameScannerData * pData)
     SFILE_FIND_DATA sf;
     HANDLE hFind;
     DWORD dwFileCount = 0;
+    char szWar3Map[0x20];
+
+    // Scan names like "war3map.w3x"
+    memcpy(szWar3Map, "war3map.w3?", 12);
+    for(char ch = 'a'; ch <= 'z'; ch++)
+    {
+        szWar3Map[10] = ch;
+        CheckFileName(pData, szWar3Map);
+    }
 
     // Scan the known files from the fixed list
     for(int i = 0; KnownFiles[i] != NULL; i++)
@@ -1529,6 +1865,11 @@ static int WorkerMapScan(HWND hDlgWorker, LPVOID pvParam)
 #ifdef _DEBUG
     CheckStringLengths(DirectoryNames);
     CheckStringLengths(Extensions);
+    CheckStringLengths(KnownTextFiles_L1);
+    CheckStringLengths(KnownTextFiles_L2);
+    CheckStringLengths(KnownTextFiles_L3);
+    CheckStringLengths(KnownSlkFiles_L1);
+    CheckStringLengths(KnownSlkFiles_L2);
 #endif
 
     // Search the archive (using the internal listfile)
@@ -1536,6 +1877,20 @@ static int WorkerMapScan(HWND hDlgWorker, LPVOID pvParam)
     {
         SetWorkerProgressText(hDlgWorker, _T("Scanning listfile ..."));
         Worker_ScanListFile(pData, pData->szListFile);
+    }
+
+    // Search known text files, like "Units\CampaignAbilityFunc.txt"
+    if(pData->bWorkStopped == false)
+    {
+        SetWorkerProgressText(hDlgWorker, _T("Scanning known text files ..."));
+        Worker_ScanKnownTextFiles(pData);
+    }
+
+    // Search known text files, like "Units\CampaignAbilityFunc.txt"
+    if(pData->bWorkStopped == false)
+    {
+        SetWorkerProgressText(hDlgWorker, _T("Scanning known SLK files ..."));
+        Worker_ScanKnownSlkFiles(pData);
     }
 
     // Search for all names up to 2 characters
