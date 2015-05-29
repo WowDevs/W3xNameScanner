@@ -758,6 +758,34 @@ static LPBYTE LoadMpqFileToMemory(TNameScannerData * pData, const char * szFileN
     return pbFileData;
 }
 
+static void CheckMdxVariants(TNameScannerData * pData, const char * szFullName)
+{
+    const char * szSuffix = "_portrait.mdx";
+    char * szExtension;
+    char szMdxVariant[MAX_PATH+1];
+    size_t nLength;
+
+    // Check the file extension
+    szExtension = GetFileExtension(szFullName);
+    if(!_stricmp(szExtension, ".mdx"))
+    {
+        // If this is the "_portrait.mdx" variant, try the one without
+        nLength = strlen(szFullName);
+        if(nLength > 13 && !_stricmp(szFullName + nLength - 13, szSuffix))
+        {
+            strcpy(szMdxVariant, szFullName);
+            strcpy(szMdxVariant + nLength - 13, ".mdx");
+            CheckFileName(pData, szMdxVariant);
+        }
+        else
+        {
+            strcpy(szMdxVariant, szFullName);
+            strcpy(szMdxVariant + nLength - 4, szSuffix);
+            CheckFileName(pData, szMdxVariant);
+        }
+    }
+}
+
 static void CheckNameVariants(TNameScannerData * pData, const char * szFullName)
 {
     char * szPlainName = GetPlainName(szFullName);
@@ -1550,6 +1578,9 @@ static void Worker_ScanKnownFiles(TNameScannerData * pData)
         {
             // Check all variants of the name in the MPQ
             CheckNameVariants(pData, sf.cFileName);
+
+            // For MDX files, there can be the "portrait" variant
+            CheckMdxVariants(pData, sf.cFileName);
 
             // Find the next file name
             if(!SFileFindNextFile(hFind, &sf))
